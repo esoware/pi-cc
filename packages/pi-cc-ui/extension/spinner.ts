@@ -5,9 +5,8 @@ import { createBlendedPaint } from './ansi.js'
 import type { PaintText } from './ansi.js'
 import { formatDuration, formatTokenCount } from './format.js'
 
-const GLYPHS = ['·', '○', '◔', '◑', '◕', '●']
-const SPINNER_FRAMES = [...GLYPHS, ...GLYPHS.toReversed()]
-const FALLBACK_GLYPH = '●'
+const SPINNER_FRAMES = ['⬩', '⬦', '⬥', '⬨', '⬧', '⬨', '⬥', '⬦', '⬩']
+const FALLBACK_GLYPH = '⬥'
 
 const FRAME_MS = 120
 const TICK_MS = 50

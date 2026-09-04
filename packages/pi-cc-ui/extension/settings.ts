@@ -51,18 +51,6 @@ export class Settings {
     return this.hostSettings().getOutputPad()
   }
 
-  shellPath(): string | undefined {
-    return this.hostSettings().getShellPath()
-  }
-
-  shellCommandPrefix(): string | undefined {
-    return this.hostSettings().getShellCommandPrefix()
-  }
-
-  imageAutoResize(): boolean {
-    return this.hostSettings().getImageAutoResize()
-  }
-
   extensionPaths(): readonly string[] {
     return this.hostSettings().getExtensionPaths()
   }

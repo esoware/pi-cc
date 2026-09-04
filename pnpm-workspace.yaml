@@ -1,6 +1,9 @@
 packages:
   - 'packages/*'
 
+autoInstallPeers: false
+
 ignoredBuiltDependencies:
   - '@google/genai'
+  - esbuild
   - protobufjs
