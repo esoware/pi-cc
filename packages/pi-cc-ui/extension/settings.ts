@@ -8,6 +8,7 @@ import { isRecord, isUnknownArray } from './guards.js'
 
 const PREFERENCES_FILE = 'pi-cc-ui.json'
 const TOOL_GROUPING_PREFERENCE = 'groupToolCalls'
+const THINKING_MODE_PREFERENCE = 'thinkingMode'
 const WHEEL_SCROLL_LINES_PREFERENCE = 'wheelScrollLines'
 const DEFAULT_WHEEL_SCROLL_LINES = 3
 const JSON_INDENT = 2
@@ -18,6 +19,8 @@ interface SettingsScope {
 }
 
 type Preferences = Record<string, unknown>
+
+export type ThinkingMode = 'live' | 'full'
 
 function isPreferences(value: unknown): value is Preferences {
   return isRecord(value) && !isUnknownArray(value)
@@ -68,6 +71,14 @@ export class Settings {
     this.writePreference(TOOL_GROUPING_PREFERENCE, enabled)
   }
 
+  thinkingMode(): ThinkingMode {
+    return this.readPreferences()[THINKING_MODE_PREFERENCE] === 'full' ? 'full' : 'live'
+  }
+
+  setThinkingMode(mode: ThinkingMode): void {
+    this.writePreference(THINKING_MODE_PREFERENCE, mode)
+  }
+
   wheelScrollLines(): number {
     const value = this.readPreferences()[WHEEL_SCROLL_LINES_PREFERENCE]
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 1) {
@@ -99,7 +110,7 @@ export class Settings {
     return typeof value === 'boolean' ? value : fallback
   }
 
-  private writePreference(key: string, value: boolean): void {
+  private writePreference(key: string, value: boolean | ThinkingMode): void {
     const updated = { ...this.readPreferences(), [key]: value }
     this.preferences = updated
     mkdirSync(getAgentDir(), { recursive: true })

@@ -18,7 +18,10 @@ import {
 import type { PaintText } from './ansi.js'
 import { isRecord, isUnknownArray } from './guards.js'
 import type { Settings } from './settings.js'
-import type { ThinkingVisibility } from './thinking.js'
+import { updateThinkingContent } from './thinking-render.js'
+import type { ThinkingRenderOptions } from './thinking-render.js'
+import type { ThinkingState } from './thinking-state.js'
+import { repaintThinking } from './thinking.js'
 import type { ToolGroups } from './tools/groups.js'
 import { STATUS_DOT } from './tools/row.js'
 import type { ToolRenderer } from './tools/row.js'
@@ -47,6 +50,7 @@ type PrefixText = () => string
 type RebuildMethod = (this: UserMessageComponent) => void
 type UpdateContentMethod = (this: object, ...args: unknown[]) => unknown
 type ThinkingVisibilityMethod = (this: object) => void
+type SetExpandedMethod = (this: object, expanded: boolean) => unknown
 
 interface OriginalMethod {
   readonly value: HostMethod
@@ -250,7 +254,7 @@ function isThinkingVisibilityMethod(value: unknown): value is ThinkingVisibility
   return typeof value === 'function'
 }
 
-function patchThinkingMarkdownPath(): Restore | undefined {
+function patchThinkingMarkdownPath(options: ThinkingRenderOptions): Restore | undefined {
   const proto: object = AssistantMessageComponent.prototype
   const found = findOriginal(proto, 'updateContent')
   if (found === undefined || !isUpdateContentMethod(found.value)) {
@@ -262,19 +266,15 @@ function patchThinkingMarkdownPath(): Restore | undefined {
     'updateContent',
     found,
     function updateContent(this: object, ...args: unknown[]): unknown {
-      if (!isRecord(this) || this['hideThinkingBlock'] !== true) {
-        const result = original.call(this, ...args)
-        prefixAssistantText(this)
-        return result
-      }
-      this['hideThinkingBlock'] = false
-      try {
-        const result = original.call(this, ...args)
-        prefixAssistantText(this)
-        return result
-      } finally {
-        this['hideThinkingBlock'] = true
-      }
+      return updateThinkingContent(
+        this,
+        () => {
+          const result = original.call(this, ...args)
+          prefixAssistantText(this)
+          return result
+        },
+        options,
+      )
     },
   )
 }
@@ -298,6 +298,53 @@ function patchThinkingToggleBridge(setExpanded: (expanded: boolean) => void): Re
         }
       }
       original.call(this)
+    },
+  )
+}
+
+function patchThinkingToggle(thinking: ThinkingState): Restore | undefined {
+  const proto: object = InteractiveMode.prototype
+  const found = findOriginal(proto, 'toggleThinkingBlockVisibility')
+  if (found === undefined || !isThinkingVisibilityMethod(found.value)) {
+    return undefined
+  }
+  const original = found.value
+  return installMethod(
+    proto,
+    'toggleThinkingBlockVisibility',
+    found,
+    function toggle(this: object): void {
+      if (isRecord(this)) {
+        this['hideThinkingBlock'] = !thinking.isExpanded()
+      }
+      original.call(this)
+    },
+  )
+}
+
+function isSetExpandedMethod(value: unknown): value is SetExpandedMethod {
+  return typeof value === 'function'
+}
+
+function patchToolThinkingExpansion(
+  thinking: ThinkingState,
+  repaint: () => void,
+): Restore | undefined {
+  const proto: object = InteractiveMode.prototype
+  const found = findOriginal(proto, 'setToolsExpanded')
+  if (found === undefined || !isSetExpandedMethod(found.value)) {
+    return undefined
+  }
+  const original = found.value
+  return installMethod(
+    proto,
+    'setToolsExpanded',
+    found,
+    function setExpanded(this: object, expanded: boolean): unknown {
+      thinking.setToolsExpanded(expanded)
+      const result = original.call(this, expanded)
+      repaint()
+      return result
     },
   )
 }
@@ -334,7 +381,11 @@ function isWheelMethod(value: unknown): value is WheelMethod {
   return typeof value === 'function'
 }
 
-function patchWheelScroll(lines: number, groups: ToolGroups): Restore | undefined {
+function patchWheelScroll(
+  lines: number,
+  groups: ToolGroups,
+  thinking: ThinkingState,
+): Restore | undefined {
   const proto: object = TuiAltScreen.prototype
   const found = findOriginal(proto, 'routeWheel')
   if (found === undefined || !isWheelMethod(found.value)) {
@@ -347,6 +398,7 @@ function patchWheelScroll(lines: number, groups: ToolGroups): Restore | undefine
     found,
     function routeWheel(this: object, event: unknown): unknown {
       groups.clearHover()
+      thinking.clearHover()
       if (!isRecord(this)) {
         return original.call(this, event)
       }
@@ -386,7 +438,11 @@ function isMotionEvent(raw: unknown): boolean {
   )
 }
 
-function patchMouseEvent(press: RowPress, groups: ToolGroups): Restore | undefined {
+function patchMouseEvent(
+  press: RowPress,
+  groups: ToolGroups,
+  thinking: ThinkingState,
+): Restore | undefined {
   const proto: object = TuiAltScreen.prototype
   const found = findOriginal(proto, 'handleMouseEvent')
   if (found === undefined || !isMouseMethod(found.value)) {
@@ -397,16 +453,20 @@ function patchMouseEvent(press: RowPress, groups: ToolGroups): Restore | undefin
     proto,
     'handleMouseEvent',
     found,
-    function handleMouseEvent(this: object, raw: unknown): unknown {
+    function handleMouseEvent(this: TuiAltScreen, raw: unknown): unknown {
       press.begin()
       if (!isMotionEvent(raw)) {
         return original.call(this, raw)
       }
       groups.beginHoverProbe()
+      thinking.beginHoverProbe()
       try {
         return original.call(this, raw)
       } finally {
         groups.endHoverProbe()
+        if (thinking.endHoverProbe()) {
+          this.requestRender()
+        }
       }
     },
   )
@@ -448,7 +508,7 @@ export interface HostPatchOptions {
   readonly settings: Settings
   readonly groups: ToolGroups
   readonly renderers: ReadonlyMap<string, ToolRenderer>
-  readonly thinking: ThinkingVisibility
+  readonly thinking: ThinkingState
 }
 
 export function installHostPatches(pi: ExtensionAPI, options: HostPatchOptions): void {
@@ -493,12 +553,16 @@ export function installHostPatches(pi: ExtensionAPI, options: HostPatchOptions):
       patchAssistantBlankRows(),
       patchToolOutputStatus(),
       patchUserMessagePrefix(paintUserPrefix),
-      patchThinkingMarkdownPath(),
+      patchThinkingMarkdownPath({ thinking, getTheme: () => theme }),
       patchThinkingToggleBridge(setThinkingExpanded),
-      patchWheelScroll(settings.wheelScrollLines(), groups),
+      patchThinkingToggle(thinking),
+      patchToolThinkingExpansion(thinking, () => {
+        repaintThinking(ctx)
+      }),
+      patchWheelScroll(settings.wheelScrollLines(), groups, thinking),
       patchToolShell(shellOptions),
       patchToolMouse(shellOptions),
-      patchMouseEvent(press, groups),
+      patchMouseEvent(press, groups, thinking),
       patchRowClickCount(press),
     ]
     const padShift = HOST_HARDCODED_PAD - settings.outputPad()

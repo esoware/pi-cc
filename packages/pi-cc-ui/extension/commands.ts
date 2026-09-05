@@ -5,6 +5,8 @@ import type {
 } from '@earendil-works/pi-coding-agent'
 
 import type { Settings } from './settings.js'
+import type { ThinkingState } from './thinking-state.js'
+import { repaintThinking } from './thinking.js'
 import type { ToolGroups } from './tools/groups.js'
 
 const THEME_PREFIX = 'pi-cc-ui-'
@@ -54,7 +56,12 @@ async function runThemeCommand(ctx: ExtensionCommandContext): Promise<void> {
   ctx.ui.notify(`Theme switch failed: ${result.error ?? choice}`, 'error')
 }
 
-export function registerCommands(pi: ExtensionAPI, settings: Settings, groups: ToolGroups): void {
+export function registerCommands(
+  pi: ExtensionAPI,
+  settings: Settings,
+  groups: ToolGroups,
+  thinking: ThinkingState,
+): void {
   function applyToolGrouping(ctx: ExtensionContext, enabled: boolean): void {
     settings.setToolGroupingEnabled(enabled)
     groups.repaintRows()
@@ -67,8 +74,28 @@ export function registerCommands(pi: ExtensionAPI, settings: Settings, groups: T
       [
         `Tool grouping: ${onOff(settings.isToolGroupingEnabled())}`,
         '  /cc-tools group on|off|toggle',
+        `Thinking: ${settings.thinkingMode()} (currently ${thinking.isForcedExpanded() ? 'full' : 'live-only'})`,
+        '  /cc-tools thinking live|full|status',
       ].join('\n'),
     )
+  }
+
+  function runThinkingCommand(value: string | undefined, ctx: ExtensionContext): void {
+    if (value === undefined || value === 'status') {
+      notify(
+        ctx,
+        `Thinking: ${settings.thinkingMode()} (live = expand only while thinking; full = keep expanded)`,
+      )
+      return
+    }
+    if (value !== 'live' && value !== 'full') {
+      notify(ctx, 'Usage: /cc-tools thinking live|full|status', 'error')
+      return
+    }
+    settings.setThinkingMode(value)
+    thinking.setExpanded(value === 'full')
+    repaintThinking(ctx)
+    notify(ctx, `Thinking: ${value === 'live' ? 'live-only' : 'full'}`)
   }
 
   function runToolsCommand(args: string, ctx: ExtensionCommandContext): void {
@@ -84,15 +111,19 @@ export function registerCommands(pi: ExtensionAPI, settings: Settings, groups: T
       applyToolGrouping(ctx, requestedValue(value, settings.isToolGroupingEnabled()))
       return
     }
-    if (option !== undefined && option !== 'status') {
-      notify(ctx, `Unknown option "${option}". Try /cc-tools status.`, 'error')
+    if (option === 'thinking') {
+      runThinkingCommand(value, ctx)
+      return
+    }
+    if (option !== undefined) {
+      notify(ctx, `Unknown option "${option}". Try /cc-tools.`, 'error')
       return
     }
     reportToolSettings(ctx)
   }
 
   pi.registerCommand('cc-tools', {
-    description: 'Control tool UI: grouping',
+    description: 'Control tool UI: grouping and thinking display',
     handler(args, ctx) {
       runToolsCommand(args, ctx)
       return Promise.resolve()

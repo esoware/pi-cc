@@ -1,19 +1,23 @@
 import type { Theme } from '@earendil-works/pi-coding-agent'
 
 import { dim } from '../ansi.js'
-import { formatDuration } from '../format.js'
-import { groupHasError } from './groups.js'
 import type { ToolGroup, ToolRecord } from './groups.js'
 import { indentContinuationLines } from './layout.js'
-import { renderStatusDot, RESULT_INDENT, RESULT_LEAD, STATUS_DOT } from './row.js'
+import {
+  formatRunningTime,
+  renderStatusDot,
+  RESULT_INDENT,
+  RESULT_LEAD,
+  STATUS_DOT,
+} from './row.js'
 
-const MIN_REPORTED_THINKING_MS = 1000
 const GROUP_GUTTER = '  '
 
 export interface GroupHeaderOptions {
   readonly hint: string | undefined
   readonly dotVisible: boolean
   readonly hovered: boolean
+  readonly elapsedMs: number | undefined
 }
 
 type CountedKind = 'search' | 'read' | 'list' | 'shell'
@@ -113,10 +117,6 @@ function formatGroupSummary(group: ToolGroup, paintCount: (count: number) => str
     parts.push(`${verb} ${paintCount(count)} ${count === 1 ? fragment.one : fragment.many}`)
   }
 
-  const thinkingMs = Math.max(0, group.thinkingMs)
-  if (thinkingMs >= MIN_REPORTED_THINKING_MS) {
-    parts.push(`${live ? 'thinking for' : 'thought for'} ${formatDuration(thinkingMs)}`)
-  }
   addFragment('shell', counts.shell)
   addFragment('search', counts.search)
   addFragment('read', counts.read)
@@ -134,7 +134,7 @@ function formatGroupSummary(group: ToolGroup, paintCount: (count: number) => str
 
 function groupGutter(theme: Theme, group: ToolGroup, dotVisible: boolean): string {
   const live = group.phase === 'live'
-  if (groupHasError(group)) {
+  if (group.members.at(-1)?.status === 'error') {
     const dot = theme.fg('error', STATUS_DOT)
     return `${live ? dim(dot) : dot} `
   }
@@ -155,5 +155,6 @@ export function renderGroupHeader(
     live && hint !== undefined
       ? `\n${theme.fg('dim', `${RESULT_LEAD}${indentContinuationLines(hint, RESULT_INDENT)}`)}`
       : ''
-  return `${gutter}${text}${hintLine}`
+  const elapsed = live ? formatRunningTime(theme, options.elapsedMs) : ''
+  return `${gutter}${text}${elapsed}${hintLine}`
 }

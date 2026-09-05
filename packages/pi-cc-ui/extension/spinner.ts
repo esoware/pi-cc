@@ -11,6 +11,7 @@ const FALLBACK_GLYPH = '⬥'
 const FRAME_MS = 120
 const TICK_MS = 50
 const GLIMMER_MS = 200
+const GLIMMER_PAUSE_MS = 500
 const MS_PER_SECOND = 1000
 
 const VERB = 'Working'
@@ -27,7 +28,6 @@ const THINKING_MORE_MS = 30_000
 const THINKING_SETTLED_VISIBLE_MS = 2000
 const THINKING_SETTLED_DELAY_MS = 2000
 
-const GLIMMER_LEAD = 10
 const GLIMMER_SPAN = 1
 const GLYPH_COLS = 2
 const BYLINE_MARGIN_COLS = 5
@@ -71,6 +71,15 @@ function paintFor(theme: Theme): SpinnerPaint {
     dim: (text) => theme.fg('dim', text),
     glow: (weight) => createBlendedPaint(theme, 'dim', 'muted', weight),
   }
+}
+
+function glimmerIndexFor(elapsedMs: number, messageWidth: number): number {
+  const sweepSteps = messageWidth + GLIMMER_SPAN * 2
+  const legMs = sweepSteps * GLIMMER_MS + GLIMMER_PAUSE_MS
+  const legIndex = Math.floor(elapsedMs / legMs)
+  const step = Math.min(sweepSteps, Math.floor((elapsedMs % legMs) / GLIMMER_MS))
+
+  return legIndex % 2 === 0 ? messageWidth + GLIMMER_SPAN - 1 - step : step - GLIMMER_SPAN
 }
 
 function glimmerMessage(message: string, glimmerIndex: number, paint: SpinnerPaint): string {
@@ -153,9 +162,7 @@ function buildSpinnerLine(frame: SpinnerFrame, paint: SpinnerPaint): string {
   const frameIndex = Math.floor(frame.elapsedMs / FRAME_MS) % SPINNER_FRAMES.length
   const glyph = paint.accent(SPINNER_FRAMES[frameIndex] ?? FALLBACK_GLYPH)
 
-  const cycleLength = messageWidth + GLIMMER_LEAD * 2
-  const cyclePosition = Math.floor(frame.elapsedMs / GLIMMER_MS)
-  const glimmerIndex = messageWidth + GLIMMER_LEAD - (cyclePosition % cycleLength)
+  const glimmerIndex = glimmerIndexFor(frame.elapsedMs, messageWidth)
   const verbSpan = glimmerMessage(message, glimmerIndex, paint)
 
   const thinking = frame.thinking

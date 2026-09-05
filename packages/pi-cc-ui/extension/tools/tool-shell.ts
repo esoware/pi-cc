@@ -12,6 +12,7 @@ import {
   dimPaint,
   expandedBody,
   formatResultLine,
+  formatRunningTime,
   HEADER_INDENT,
   paintRowLines,
   renderStatusDot,
@@ -304,6 +305,7 @@ function groupHeaderLines(target: RowRender, group: ToolGroup, width: number): s
       hint,
       dotVisible: group.phase === 'live' ? groups.keepBlinking() : true,
       hovered: groups.isHovered(host.toolCallId),
+      elapsedMs: groups.groupBashElapsedMsFor(group),
     }),
     width,
     RESULT_INDENT.length,
@@ -358,7 +360,12 @@ function renderShellRow(target: RowRender, width: number): string[] {
   const bodyWidth = Math.max(1, width - RESULT_INDENT.length)
   const body = hasRenderer ? renderChild(children[1], bodyWidth) : fallbackBody(target, bodyWidth)
 
-  const lines = [`${dot} ${header[0] ?? ''}`]
+  const elapsed = formatRunningTime(theme, target.ui.groups.bashElapsedMsFor(host.toolCallId))
+  const lines = wrapWithHangingIndent(
+    `${dot} ${header[0] ?? ''}${elapsed}`,
+    width,
+    HEADER_INDENT.length,
+  )
   for (const line of header.slice(1)) {
     lines.push(`${HEADER_INDENT}${line}`)
   }

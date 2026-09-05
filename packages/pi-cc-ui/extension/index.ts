@@ -7,7 +7,8 @@ import { registerPromptEditor } from './prompt-editor.js'
 import { Settings } from './settings.js'
 import { registerSpinner } from './spinner.js'
 import { registerStatusLine } from './status-line.js'
-import { registerThinking, ThinkingVisibility } from './thinking.js'
+import { ThinkingState } from './thinking-state.js'
+import { registerThinking } from './thinking.js'
 import { createBuiltinRenderers } from './tools/builtins.js'
 import { ToolGroups } from './tools/groups.js'
 import { registerTurnFooter } from './turn-footer.js'
@@ -15,7 +16,7 @@ import { registerTurnFooter } from './turn-footer.js'
 export default function piCcUi(pi: ExtensionAPI): void {
   const settings = new Settings(pi)
   const groups = new ToolGroups(pi, settings)
-  const thinking = new ThinkingVisibility()
+  const thinking = new ThinkingState()
 
   const renderers = createBuiltinRenderers(pi, groups)
   installHostPatches(pi, { settings, groups, renderers, thinking })
@@ -26,7 +27,7 @@ export default function piCcUi(pi: ExtensionAPI): void {
   registerStatusLine(pi)
   registerPromptEditor(pi)
 
-  registerThinking(pi, thinking)
+  registerThinking(pi, thinking, settings)
 
-  registerCommands(pi, settings, groups)
+  registerCommands(pi, settings, groups, thinking)
 }

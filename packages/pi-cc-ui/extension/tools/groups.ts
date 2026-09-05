@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-import { collapseWhitespace } from '../format.js'
 import type { FormatPath } from '../paths.js'
 import type { Settings } from '../settings.js'
 import { classifyToolCall, formatGlanceHint, readToolCallArguments } from './classify.js'
@@ -10,6 +9,8 @@ const MAX_ARCHIVED_GROUPS = 500
 const MAX_TRACKED_ROWS = 1000
 const BLINK_INTERVAL_MS = 600
 const HINT_MIN_DISPLAY_MS = 700
+const BASH_TIMER_DELAY_MS = 2000
+const BASH_TIMER_INTERVAL_MS = 1000
 
 type Timer = ReturnType<typeof setTimeout>
 type Interval = ReturnType<typeof setInterval>
@@ -22,13 +23,12 @@ export interface ToolRecord {
   readonly toolName: string
   readonly args: ToolCallArguments
   readonly glance: ToolGlance | undefined
-  readonly startedAt: number
   status: ToolStatus
 }
 
-interface ThinkingHint {
-  readonly text: string
-  readonly at: number
+interface RunningBash {
+  readonly startedAt: number
+  readonly timer: Interval
 }
 
 interface ShownHint {
@@ -49,8 +49,6 @@ interface HintState {
 export interface ToolGroup {
   readonly members: ToolRecord[]
   phase: GroupPhase
-  thinkingMs: number
-  thinkingHint: ThinkingHint | undefined
   contentAfter: boolean
   hint: HintState
 }
@@ -77,16 +75,10 @@ function hasPendingMember(members: readonly ToolRecord[]): boolean {
   return members.some((member) => member.status === 'pending')
 }
 
-export function groupHasError(group: ToolGroup): boolean {
-  return group.members.some((member) => member.status === 'error')
-}
-
 function createGroup(members: ToolRecord[]): ToolGroup {
   return {
     members,
     phase: hasPendingMember(members) ? 'live' : 'settled',
-    thinkingMs: 0,
-    thinkingHint: undefined,
     contentAfter: false,
     hint: { shown: undefined, scheduled: undefined },
   }
@@ -98,10 +90,6 @@ function latestHint(group: ToolGroup): GlanceHint | undefined {
     newestFirst.find(
       (candidate) => candidate.status === 'pending' && candidate.glance?.hint !== undefined,
     ) ?? newestFirst.find((candidate) => candidate.glance?.hint !== undefined)
-  const thinkingHint = group.thinkingHint
-  if (thinkingHint !== undefined && (member === undefined || thinkingHint.at > member.startedAt)) {
-    return { kind: 'thinking', text: thinkingHint.text }
-  }
   return member?.glance?.hint
 }
 
@@ -109,13 +97,11 @@ export class ToolGroups {
   private readonly settings: Settings
   private readonly rowHandles = new Map<string, RowHandle>()
   private readonly blinkingRows = new Map<string, () => void>()
+  private readonly runningBash = new Map<string, RunningBash>()
   private records = new Map<string, ToolRecord>()
   private turnOrder: TurnEntry[] = []
   private liveGroups: ToolGroup[] = []
   private archivedGroups: ToolGroup[] = []
-  private pendingThinkingMs = 0
-  private pendingThinkingHint: ThinkingHint | undefined = undefined
-  private thinkingOpenedAt: number | undefined = undefined
   private blinkTimer: Interval | undefined = undefined
   private blinkOn = true
   private blinkEnabled = false
@@ -156,23 +142,15 @@ export class ToolGroups {
 
     pi.on('message_update', (event) => {
       const update = event.assistantMessageEvent
-      if (update.type === 'thinking_end') {
-        this.rememberThinkingHint(update.content)
-      } else if (update.type === 'text_start') {
+      if (!('contentIndex' in update)) {
+        return
+      }
+      const block = update.partial.content[update.contentIndex]
+      if (
+        (block?.type === 'thinking' && block.thinking.trim() !== '') ||
+        (block?.type === 'text' && block.text.trim() !== '')
+      ) {
         this.breakGroupRun()
-      }
-      const message = event.message
-      const lastBlock = message.role === 'assistant' ? message.content.at(-1) : undefined
-      if (lastBlock?.type === 'thinking') {
-        this.thinkingOpenedAt ??= Date.now()
-      } else {
-        this.closeThinkingBlock()
-      }
-    })
-
-    pi.on('message_end', (event) => {
-      if (event.message.role === 'assistant') {
-        this.closeThinkingBlock()
       }
     })
 
@@ -184,12 +162,13 @@ export class ToolGroups {
         toolName: event.toolName,
         args,
         glance,
-        startedAt: Date.now(),
         status: 'pending',
       })
+      if (event.toolName === 'bash') {
+        this.startBashTimer(event.toolCallId)
+      }
       this.turnOrder.push({ kind: 'tool', toolCallId: event.toolCallId })
       this.rebuildGroups()
-      this.closeThinkingBlock()
       this.invalidateGroups()
       if (glance !== undefined) {
         this.ensureBlink()
@@ -197,6 +176,7 @@ export class ToolGroups {
     })
 
     pi.on('tool_execution_end', (event) => {
+      this.stopBashTimer(event.toolCallId)
       this.blinkingRows.delete(event.toolCallId)
       const record = this.records.get(event.toolCallId)
       if (record === undefined) {
@@ -293,6 +273,26 @@ export class ToolGroups {
     return this.keepBlinking()
   }
 
+  bashElapsedMsFor(toolCallId: string): number | undefined {
+    const running = this.runningBash.get(toolCallId)
+    if (running === undefined) {
+      return undefined
+    }
+    const elapsedMs = Date.now() - running.startedAt
+    return elapsedMs >= BASH_TIMER_DELAY_MS ? elapsedMs : undefined
+  }
+
+  groupBashElapsedMsFor(group: ToolGroup): number | undefined {
+    let elapsedMs: number | undefined
+    for (const member of group.members) {
+      const memberElapsedMs = this.bashElapsedMsFor(member.toolCallId)
+      if (memberElapsedMs !== undefined) {
+        elapsedMs = Math.max(elapsedMs ?? 0, memberElapsedMs)
+      }
+    }
+    return elapsedMs
+  }
+
   hintTextFor(group: ToolGroup, formatPath: FormatPath): string | undefined {
     const hint = group.phase === 'live' ? latestHint(group) : undefined
     return this.resolveHint(
@@ -312,15 +312,13 @@ export class ToolGroups {
   }
 
   private startTurn(): void {
+    this.stopBashTimers()
     for (const group of this.liveGroups) {
       this.cancelHintSwap(group)
     }
     this.records = new Map()
     this.turnOrder = []
     this.liveGroups = []
-    this.pendingThinkingMs = 0
-    this.pendingThinkingHint = undefined
-    this.thinkingOpenedAt = undefined
   }
 
   private archiveGroups(): void {
@@ -329,7 +327,6 @@ export class ToolGroups {
         member.status = member.status === 'pending' ? 'success' : member.status
       }
       group.phase = 'settled'
-      group.thinkingHint = undefined
       this.cancelHintSwap(group)
       this.archivedGroups.push(group)
     }
@@ -339,6 +336,7 @@ export class ToolGroups {
   }
 
   private settleLeakedGroups(): void {
+    this.stopBashTimers()
     let changed = false
     for (const group of this.liveGroups) {
       for (const member of group.members) {
@@ -380,8 +378,6 @@ export class ToolGroups {
       )
       if (previous !== undefined) {
         group.hint = previous.hint
-        group.thinkingMs += previous.thinkingMs
-        group.thinkingHint ??= previous.thinkingHint
         group.contentAfter = previous.contentAfter
       }
     }
@@ -392,12 +388,7 @@ export class ToolGroups {
     if (run.length === 0) {
       return
     }
-    const group = createGroup([...run])
-    group.thinkingMs = this.pendingThinkingMs
-    group.thinkingHint = this.pendingThinkingHint
-    this.pendingThinkingMs = 0
-    this.pendingThinkingHint = undefined
-    groups.push(group)
+    groups.push(createGroup([...run]))
   }
 
   private setHovered(toolCallId: string | undefined): void {
@@ -455,28 +446,6 @@ export class ToolGroups {
     }
   }
 
-  private rememberThinkingHint(content: string): void {
-    const text = collapseWhitespace(content)
-    if (text === '') {
-      return
-    }
-    const hint: ThinkingHint = { text, at: Date.now() }
-    const group = this.liveGroups.at(-1)
-    if (group?.phase === 'live') {
-      group.thinkingHint = hint
-      this.invalidateGroups()
-    } else {
-      this.pendingThinkingHint = hint
-    }
-  }
-
-  private closeThinkingBlock(): void {
-    if (this.thinkingOpenedAt !== undefined) {
-      this.pendingThinkingMs += Date.now() - this.thinkingOpenedAt
-      this.thinkingOpenedAt = undefined
-    }
-  }
-
   private resolveHint(group: ToolGroup, incoming: string | undefined): string | undefined {
     const state = group.hint
     if (incoming === undefined) {
@@ -530,6 +499,40 @@ export class ToolGroups {
     if (scheduled !== undefined) {
       clearTimeout(scheduled.timer)
       group.hint.scheduled = undefined
+    }
+  }
+
+  private startBashTimer(toolCallId: string): void {
+    if (!this.blinkEnabled) {
+      return
+    }
+    this.stopBashTimer(toolCallId)
+    const startedAt = Date.now()
+    const timer = setInterval(() => {
+      if (this.bashElapsedMsFor(toolCallId) === undefined) {
+        return
+      }
+      this.rowHandles.get(toolCallId)?.invalidate()
+      const group = this.groupOf(toolCallId)
+      if (group !== undefined && group.members[0]?.toolCallId !== toolCallId) {
+        this.invalidateGroup(group)
+      }
+    }, BASH_TIMER_INTERVAL_MS)
+    timer.unref()
+    this.runningBash.set(toolCallId, { startedAt, timer })
+  }
+
+  private stopBashTimer(toolCallId: string): void {
+    const running = this.runningBash.get(toolCallId)
+    if (running !== undefined) {
+      clearInterval(running.timer)
+      this.runningBash.delete(toolCallId)
+    }
+  }
+
+  private stopBashTimers(): void {
+    for (const toolCallId of this.runningBash.keys()) {
+      this.stopBashTimer(toolCallId)
     }
   }
 

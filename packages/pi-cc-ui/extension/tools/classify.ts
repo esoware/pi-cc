@@ -55,7 +55,7 @@ const BASH_PROMPT = '$'
 const POWERSHELL_PROMPT = 'PS>'
 
 export type GlanceHint =
-  | { readonly kind: 'path' | 'pattern' | 'comment' | 'thinking'; readonly text: string }
+  | { readonly kind: 'path' | 'pattern' | 'comment'; readonly text: string }
   | { readonly kind: 'command'; readonly text: string; readonly prompt: string }
 
 export type ToolGlance =
@@ -221,7 +221,6 @@ function glanceHintText(hint: GlanceHint, formatPath: FormatPath): string {
     case 'path': {
       return formatPath(hint.text)
     }
-    case 'thinking':
     case 'comment': {
       return hint.text
     }

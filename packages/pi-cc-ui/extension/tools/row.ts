@@ -5,6 +5,7 @@ import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 import { BG_DEFAULT, RESET, themeName } from '../ansi.js'
 import type { PaintText } from '../ansi.js'
 import { cacheKey, KeyedCache } from '../cache.js'
+import { formatDuration } from '../format.js'
 import {
   clampWidth,
   EXPANDED_LINES,
@@ -147,6 +148,10 @@ export function formatToolHeader(
 ): string {
   const name = theme.bold(label)
   return `${dot} ${summary === '' ? name : `${name}(${summary})`}`
+}
+
+export function formatRunningTime(theme: Theme, elapsedMs: number | undefined): string {
+  return elapsedMs === undefined ? '' : theme.fg('dim', ` · ${formatDuration(elapsedMs)}`)
 }
 
 export function formatResultLine(theme: Theme, text: string): string {

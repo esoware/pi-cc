@@ -65,6 +65,7 @@ import {
   formatResultError,
   formatResultLine,
   formatResultStatus,
+  formatRunningTime,
   formatToolHeader,
   renderDiffCard,
   renderRowBody,
@@ -340,7 +341,8 @@ function shellRenderer(ui: ToolUi, label: string): ToolRenderer {
         row.expanded ? command.replaceAll('\r', '') : truncateCommand(command),
         renderRowDot(ui, theme, row),
       )
-      return renderRowHeader(row, header + formatLiveLineCount(theme, row))
+      const elapsed = formatRunningTime(theme, ui.groups.bashElapsedMsFor(row.toolCallId))
+      return renderRowHeader(row, header + formatLiveLineCount(theme, row) + elapsed)
     },
     renderResult(result, options, theme, row) {
       const expanded = options.expanded

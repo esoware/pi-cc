@@ -1,55 +1,79 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 
-import { dim, italic } from './ansi.js'
+import type { Settings } from './settings.js'
+import { THINKING_TITLE } from './thinking-render.js'
+import type { ThinkingState } from './thinking-state.js'
 
-const THINKING_TITLE = '∴ Thinking…'
+const THINKING_TIMING_ENTRY = 'cc-thinking-timing'
 
-export class ThinkingVisibility {
-  private expanded = false
-
-  isExpanded(): boolean {
-    return this.expanded
-  }
-
-  setExpanded(expanded: boolean): void {
-    this.expanded = expanded
+export function repaintThinking(ctx: ExtensionContext): void {
+  if (ctx.mode === 'tui') {
+    ctx.ui.setHiddenThinkingLabel(THINKING_TITLE)
   }
 }
 
-function repaintThinking(ctx: ExtensionContext): void {
-  ctx.ui.setHiddenThinkingLabel(THINKING_TITLE)
-}
-
-export function registerThinking(pi: ExtensionAPI, thinking: ThinkingVisibility): void {
-  pi.registerMarkdownTransformer((markdown, context) => {
-    if (context.messageType !== 'assistant-thinking') {
-      return markdown
+export function registerThinking(
+  pi: ExtensionAPI,
+  thinking: ThinkingState,
+  settings: Settings,
+): void {
+  pi.on('session_start', (_event, ctx) => {
+    thinking.reset(settings.thinkingMode())
+    if (ctx.mode !== 'tui') {
+      return
     }
-    if (!thinking.isExpanded()) {
-      return ''
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (entry.type === 'custom' && entry.customType === THINKING_TIMING_ENTRY) {
+        thinking.restore(entry.data)
+      }
     }
-    const body = markdown.trim()
-    if (body === '') {
-      return markdown
-    }
-    return `${dim(italic(THINKING_TITLE))}\n\n${body}`
+    thinking.setToolsExpanded(ctx.ui.getToolsExpanded())
+    repaintThinking(ctx)
   })
 
-  pi.on('session_start', (_event, ctx) => {
-    thinking.setExpanded(false)
-    if (ctx.hasUI) {
-      repaintThinking(ctx)
+  pi.on('session_shutdown', () => {
+    thinking.reset()
+  })
+
+  pi.on('message_start', (event, ctx) => {
+    if (ctx.mode === 'tui' && event.message.role === 'assistant') {
+      thinking.finish()
     }
+  })
+
+  pi.on('message_update', (event, ctx) => {
+    if (ctx.mode === 'tui' && event.message.role === 'assistant') {
+      thinking.update(event.message, event.assistantMessageEvent)
+    }
+  })
+
+  pi.on('message_end', (event, ctx) => {
+    if (ctx.mode !== 'tui' || event.message.role !== 'assistant') {
+      return
+    }
+    thinking.finish(event.message)
+    const timing = thinking.snapshot(event.message)
+    if (timing !== undefined) {
+      pi.appendEntry(THINKING_TIMING_ENTRY, timing)
+    }
+  })
+
+  pi.on('agent_end', (_event, ctx) => {
+    thinking.finish()
+    repaintThinking(ctx)
+  })
+
+  pi.on('session_tree', () => {
+    thinking.finish()
   })
 
   pi.registerShortcut('alt+t', {
-    description: 'Toggle thinking visibility',
+    description: 'Toggle full or live-only thinking',
     handler(ctx) {
-      const expanded = !thinking.isExpanded()
-      thinking.setExpanded(expanded)
+      thinking.setExpanded(!thinking.isExpanded())
+      repaintThinking(ctx)
       if (ctx.hasUI) {
-        repaintThinking(ctx)
-        ctx.ui.notify(`Thinking: ${expanded ? 'expanded' : 'hidden'}`, 'info')
+        ctx.ui.notify(`Thinking: ${thinking.isExpanded() ? 'full' : 'live-only'}`, 'info')
       }
     },
   })
