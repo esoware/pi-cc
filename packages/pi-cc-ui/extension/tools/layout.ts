@@ -9,6 +9,9 @@ import {
 
 import type { PaintText } from '../ansi.js'
 
+export const PREVIEW_LINES = 3
+export const EXPANDED_LINES = 2000
+
 const MAX_CHARS_PER_COLUMN = 4
 const TRAILING_WHITESPACE_RE = /\s+$/u
 const TRAILING_SPACE_RE = /[ \t]+$/u
@@ -51,7 +54,7 @@ export function indentContinuationLines(text: string, indent: string): string {
 
 export function wrapWithHangingIndent(text: string, width: number, indent: number): string[] {
   const maxWidth = clampWidth(width)
-  const pad = ' '.repeat(indent)
+  const continuation = ' '.repeat(indent)
   const contentWidth = clampWidth(maxWidth - indent)
   const wrapped: string[] = []
   for (const logical of text.split('\n')) {
@@ -63,7 +66,7 @@ export function wrapWithHangingIndent(text: string, width: number, indent: numbe
       const rows = wrapTextWithAnsi(content, contentWidth)
       wrapped.push(`${gutter}${rows[0] ?? ''}`)
       for (const row of rows.slice(1)) {
-        wrapped.push(`${pad}${row}`)
+        wrapped.push(`${continuation}${row}`)
       }
     }
   }

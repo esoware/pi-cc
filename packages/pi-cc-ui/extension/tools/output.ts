@@ -1,3 +1,5 @@
+import type { ReadToolDetails, TruncationResult } from '@earendil-works/pi-coding-agent'
+
 import { ESC } from '../ansi.js'
 import { isRecord, isUnknownArray } from '../guards.js'
 
@@ -86,4 +88,35 @@ export function countGrepFiles(matches: readonly string[]): number {
 
 export function lastExitCode(output: string): string | undefined {
   return [...output.matchAll(EXIT_CODE_RE)].at(-1)?.groups?.['code']
+}
+
+const READ_TRUNCATION_KEY: keyof ReadToolDetails = 'truncation'
+const TRUNCATED_KEY: keyof TruncationResult = 'truncated'
+const TOTAL_LINES_KEY: keyof TruncationResult = 'totalLines'
+
+export type ReadTruncation = Pick<TruncationResult, 'truncated' | 'totalLines'>
+
+export function readTruncation(details: unknown): ReadTruncation | undefined {
+  if (!isRecord(details)) {
+    return undefined
+  }
+  const truncation = details[READ_TRUNCATION_KEY]
+  if (!isRecord(truncation)) {
+    return undefined
+  }
+  const truncated = truncation[TRUNCATED_KEY]
+  const totalLines = truncation[TOTAL_LINES_KEY]
+  if (typeof truncated !== 'boolean' || typeof totalLines !== 'number') {
+    return undefined
+  }
+  return { truncated, totalLines }
+}
+
+const EXIT_NOTICE_LINE_RE = /^Command exited with code \d+$/u
+
+export function stripExitCodeNotice(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => !EXIT_NOTICE_LINE_RE.test(line.trim()))
+    .join('\n')
 }

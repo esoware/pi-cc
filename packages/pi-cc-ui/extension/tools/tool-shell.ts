@@ -4,13 +4,21 @@ import { stripTerminalSequences } from '@earendil-works/pi-tui'
 
 import { ESC } from '../ansi.js'
 import { isRecord, isUnknownArray } from '../guards.js'
-import { dimPaint, groupRowText, previewLineLimit } from './group-row.js'
-import type { ToolUi } from './group-row.js'
-import { renderTruncatedContent, wrapWithHangingIndent } from './layout.js'
-import { formatResultLine, HEADER_INDENT, renderStatusDot, RESULT_INDENT } from './row.js'
+import { shortPath } from '../paths.js'
+import { renderGroupHeader } from './group-render.js'
+import type { RowHandle, ToolGroup, ToolUi } from './groups.js'
+import { PREVIEW_LINES, renderTruncatedContent, wrapWithHangingIndent } from './layout.js'
+import {
+  dimPaint,
+  expandedBody,
+  formatResultLine,
+  HEADER_INDENT,
+  paintRowLines,
+  renderStatusDot,
+  RESULT_INDENT,
+} from './row.js'
 import type { DotState, ToolRenderer, ToolRow } from './row.js'
 
-const EXPANDED_FALLBACK_ROWS = 2000
 const BUILTIN_SOURCE = 'builtin'
 const SGR_RE = new RegExp(`${ESC}\\[[0-9;]*m`, 'gu')
 const COLOR_PARAM_RE = /^(?:3\d|4\d|9[0-7]|10[0-7])$/u
@@ -21,6 +29,7 @@ const RGB_PARAM_COUNT = 4
 const INDEXED_PARAM_COUNT = 2
 
 export type RenderMethod = (this: object, width: number) => string[]
+export type MouseMethod = (this: object, event: unknown) => unknown
 
 type ToolInfoList = ReturnType<ExtensionAPI['getAllTools']>
 
@@ -29,6 +38,25 @@ export interface ToolShellOptions {
   readonly ui: ToolUi
   readonly renderers: ReadonlyMap<string, ToolRenderer>
   readonly getAllTools: () => ToolInfoList
+  readonly press: RowPress
+}
+
+export class RowPress {
+  private armed = false
+
+  begin(): void {
+    this.armed = false
+  }
+
+  arm(): void {
+    this.armed = true
+  }
+
+  take(): boolean {
+    const armed = this.armed
+    this.armed = false
+    return armed
+  }
 }
 
 interface ShellResult {
@@ -55,7 +83,22 @@ interface ShellHost {
   readonly getRenderShell: () => unknown
   readonly getRenderContext: (lastComponent: Component | undefined) => unknown
   readonly getTextOutput: () => unknown
+  readonly setExpanded: (expanded: boolean) => void
   readonly invalidate: () => void
+}
+
+interface PointerRow {
+  readonly y: number
+  readonly height: number
+}
+
+interface LeftPointer extends PointerRow {
+  readonly type: 'press' | 'click'
+  readonly button: 'left'
+}
+
+interface PointerMove extends PointerRow {
+  readonly type: 'move'
 }
 
 interface BuiltinComponents {
@@ -68,14 +111,20 @@ interface BuiltinState {
   readonly components: BuiltinComponents
 }
 
-interface BuiltinRender {
+interface RowRender {
   readonly host: ShellHost
+  readonly theme: Theme
+  readonly ui: ToolUi
+  readonly expanded: boolean
+}
+
+interface BuiltinRender extends RowRender {
   readonly renderer: ToolRenderer
   readonly components: BuiltinComponents
-  readonly theme: Theme
 }
 
 const builtinStates = new WeakMap<object, BuiltinState>()
+const hostRendered = new WeakSet<object>()
 
 function stripColorParams(params: string): string {
   const parts = params === '' ? ['0'] : params.split(';')
@@ -153,8 +202,30 @@ function isShellHost(value: unknown): value is ShellHost {
     typeof value['getRenderShell'] === 'function' &&
     typeof value['getRenderContext'] === 'function' &&
     typeof value['getTextOutput'] === 'function' &&
+    typeof value['setExpanded'] === 'function' &&
     typeof value['invalidate'] === 'function'
   )
+}
+
+function isPointerRow(value: unknown): value is PointerRow {
+  return isRecord(value) && typeof value['y'] === 'number' && typeof value['height'] === 'number'
+}
+
+function isLeftPointer(value: unknown): value is LeftPointer {
+  return (
+    isPointerRow(value) &&
+    isRecord(value) &&
+    (value['type'] === 'press' || value['type'] === 'click') &&
+    value['button'] === 'left'
+  )
+}
+
+function isPointerMove(value: unknown): value is PointerMove {
+  return isPointerRow(value) && isRecord(value) && value['type'] === 'move'
+}
+
+function inClickArea(host: ShellHost, event: PointerRow): boolean {
+  return host.result !== undefined && event.y >= 1 && event.y < event.height
 }
 
 function isToolRow(value: unknown): value is ToolRow {
@@ -193,6 +264,10 @@ function trimBlankRows(lines: readonly string[]): string[] {
   return lines.slice(start, end)
 }
 
+function ownsShell(host: ShellHost): boolean {
+  return host.hasRendererDefinition() && host.getRenderShell() === 'self'
+}
+
 function shellDotState(host: ShellHost): DotState {
   if (host.result?.isError === true) {
     return 'error'
@@ -203,21 +278,51 @@ function shellDotState(host: ShellHost): DotState {
   return host.executionStarted ? 'busy' : 'idle'
 }
 
+function rowHandle(host: ShellHost): RowHandle {
+  return {
+    invalidate: () => {
+      host.invalidate()
+      host.ui.requestRender()
+    },
+    isExpanded: () => host.expanded,
+    setExpanded: (expanded) => {
+      host.setExpanded(expanded)
+    },
+  }
+}
+
 function renderChild(child: Component | undefined, width: number): string[] {
   return child === undefined ? [] : trimBlankRows(child.render(Math.max(1, width)))
 }
 
-function fallbackBody(theme: Theme, ui: ToolUi, host: ShellHost, width: number): string[] {
-  const raw = host.getTextOutput()
+function groupHeaderLines(target: RowRender, group: ToolGroup, width: number): string[] {
+  const groups = target.ui.groups
+  const host = target.host
+  const hint = groups.hintTextFor(group, (path) => shortPath(host.cwd, path))
+  return wrapWithHangingIndent(
+    renderGroupHeader(target.theme, group, {
+      hint,
+      dotVisible: group.phase === 'live' ? groups.keepBlinking() : true,
+      hovered: groups.isHovered(host.toolCallId),
+    }),
+    width,
+    RESULT_INDENT.length,
+  )
+}
+
+function fallbackBody(target: RowRender, width: number): string[] {
+  const raw = target.host.getTextOutput()
   const output = typeof raw === 'string' ? raw : ''
   if (output.trim() === '') {
     return []
   }
-  const rendered = renderTruncatedContent(theme, output, width, {
-    rows: host.expanded ? EXPANDED_FALLBACK_ROWS : previewLineLimit(ui),
-    paintLine: dimPaint(theme),
-    expandHint: !host.expanded,
-  })
+  const rendered = target.expanded
+    ? expandedBody(target.theme, output, width)
+    : renderTruncatedContent(target.theme, output, width, {
+        rows: PREVIEW_LINES,
+        paintLine: dimPaint(target.theme),
+        expandHint: true,
+      })
   return rendered === '' ? [] : rendered.split('\n')
 }
 
@@ -232,47 +337,28 @@ function appendImages(host: ShellHost, lines: string[], width: number): string[]
   return lines
 }
 
-function renderShell(host: ShellHost, theme: Theme, ui: ToolUi, width: number): string[] {
-  if (host.hideComponent) {
-    return []
-  }
-  function invalidate(): void {
-    host.invalidate()
-    host.ui.requestRender()
-  }
-  const grouped = groupRowText(ui, theme, {
-    toolCallId: host.toolCallId,
-    cwd: host.cwd,
-    expanded: host.expanded,
-    invalidate,
-  })
-  if (grouped?.kind === 'hidden') {
-    return []
-  }
-  if (grouped !== undefined) {
-    return ['', ...wrapWithHangingIndent(grouped.text, width, RESULT_INDENT.length)]
-  }
-
+function renderShellRow(target: RowRender, width: number): string[] {
+  const host = target.host
+  const theme = target.theme
   const state = shellDotState(host)
   const dotVisible =
-    state === 'busy' ? ui.groups.keepRowBlinking(host.toolCallId, invalidate) : true
+    state === 'busy'
+      ? target.ui.groups.keepRowBlinking(host.toolCallId, rowHandle(host).invalidate)
+      : true
   const dot = renderStatusDot(theme, state, dotVisible)
 
   const hasRenderer = host.hasRendererDefinition()
   const children = hasRenderer ? host.contentBox.children : []
-  const call = children[0]
-  const result = children[1]
   const header = hasRenderer
-    ? renderChild(call, width - HEADER_INDENT.length).map((line) => stripColors(line))
+    ? renderChild(children[0], width - HEADER_INDENT.length).map((line) => stripColors(line))
     : []
   if (header.length === 0) {
     header.push(theme.bold(host.toolName))
   }
-  const body = hasRenderer
-    ? renderChild(result, width - RESULT_INDENT.length)
-    : fallbackBody(theme, ui, host, Math.max(1, width - RESULT_INDENT.length))
+  const bodyWidth = Math.max(1, width - RESULT_INDENT.length)
+  const body = hasRenderer ? renderChild(children[1], bodyWidth) : fallbackBody(target, bodyWidth)
 
-  const lines = ['', `${dot} ${header[0] ?? ''}`]
+  const lines = [`${dot} ${header[0] ?? ''}`]
   for (const line of header.slice(1)) {
     lines.push(`${HEADER_INDENT}${line}`)
   }
@@ -282,7 +368,7 @@ function renderShell(host: ShellHost, theme: Theme, ui: ToolUi, width: number): 
       lines.push(`${RESULT_INDENT}${line}`)
     }
   }
-  return appendImages(host, lines, width)
+  return lines
 }
 
 function isBuiltinOwned(options: ToolShellOptions, name: string): boolean {
@@ -313,11 +399,12 @@ function renderBuiltin(target: BuiltinRender, width: number): string[] | undefin
   const renderer = target.renderer
   const components = target.components
   const theme = target.theme
+  const expanded = target.expanded
   const callContext = host.getRenderContext(components.call)
   if (!isToolRow(callContext)) {
     return undefined
   }
-  const call = renderer.renderCall(theme, callContext)
+  const call = renderer.renderCall(theme, { ...callContext, expanded })
   components.call = call
   const lines = [...call.render(width)]
   const result = host.result
@@ -328,9 +415,9 @@ function renderBuiltin(target: BuiltinRender, width: number): string[] | undefin
     }
     const component = renderer.renderResult(
       { content: result.content, details: result.details },
-      { expanded: host.expanded, isPartial: host.isPartial },
+      { expanded, isPartial: host.isPartial },
       theme,
-      resultContext,
+      { ...resultContext, expanded },
     )
     components.result = component
     lines.push(...component.render(width))
@@ -354,27 +441,84 @@ export function createToolShellRender(
     if (!isShellHost(this)) {
       return original.call(this, width)
     }
+    hostRendered.delete(this)
+    const ui = options.ui
+    const theme = options.getTheme()
+    ui.groups.trackRow(this.toolCallId, rowHandle(this))
+    if (this.hideComponent) {
+      return []
+    }
+    const membership = ui.groups.membership(this.toolCallId)
+    const expanded = membership?.expanded ?? this.expanded
+    const target: RowRender = { host: this, theme, ui, expanded }
+    if (membership !== undefined && !membership.expanded) {
+      return membership.isLeader ? ['', ...groupHeaderLines(target, membership.group, width)] : []
+    }
+
+    let lines: string[] | undefined
     const renderer = options.renderers.get(this.toolName)
-    if (renderer !== undefined) {
-      const state = builtinState(this, options)
-      if (state.owned) {
-        const lines = renderBuiltinSafely(
-          {
-            host: this,
-            renderer,
-            components: state.components,
-            theme: options.getTheme(),
-          },
-          width,
-        )
-        if (lines !== undefined) {
-          return appendImages(this, lines.length > 0 ? ['', ...lines] : [], width)
-        }
+    const state = renderer === undefined ? undefined : builtinState(this, options)
+    if (renderer !== undefined && state?.owned === true) {
+      lines = renderBuiltinSafely({ ...target, renderer, components: state.components }, width)
+    }
+    if (lines === undefined) {
+      if (ownsShell(this)) {
+        hostRendered.add(this)
+        return original.call(this, width)
       }
+      lines = renderShellRow(target, width)
     }
-    if (this.hasRendererDefinition() && this.getRenderShell() === 'self') {
-      return original.call(this, width)
+    if (lines.length === 0) {
+      return appendImages(this, [], width)
     }
-    return renderShell(this, options.getTheme(), options.ui, width)
+    if (!expanded) {
+      return appendImages(this, ['', ...lines], width)
+    }
+    const dotState = shellDotState(this)
+    const separator =
+      membership !== undefined && !membership.isLeader
+        ? paintRowLines(theme, dotState, [''], width)
+        : ['']
+    return appendImages(
+      this,
+      [...separator, ...paintRowLines(theme, dotState, lines, width)],
+      width,
+    )
+  }
+}
+
+export function createToolShellMouse(
+  options: ToolShellOptions,
+  original: MouseMethod,
+): MouseMethod {
+  return function handleMouse(this: object, event: unknown): unknown {
+    if (!isShellHost(this) || hostRendered.has(this)) {
+      return original.call(this, event)
+    }
+    const groups = options.ui.groups
+    if (isPointerMove(event)) {
+      const membership = groups.membership(this.toolCallId)
+      if (event.y < 1 || membership === undefined || membership.expanded || !membership.isLeader) {
+        return original.call(this, event)
+      }
+      return { handled: true, render: groups.hoverRow(this.toolCallId) }
+    }
+    if (!isLeftPointer(event)) {
+      return original.call(this, event)
+    }
+    if (!inClickArea(this, event)) {
+      return undefined
+    }
+    if (event.type === 'press') {
+      options.press.arm()
+      return undefined
+    }
+    const membership = groups.membership(this.toolCallId)
+    if (membership === undefined) {
+      this.setExpanded(!this.expanded)
+    } else {
+      groups.setGroupExpanded(this.toolCallId, !membership.expanded)
+    }
+    return { handled: true }
   }
 }

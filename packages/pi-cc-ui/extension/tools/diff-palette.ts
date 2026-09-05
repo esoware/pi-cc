@@ -22,8 +22,8 @@ interface DiffPalette {
 }
 
 const CLAUDE_DARK: DiffPalette = {
-  added: { r: 34, g: 92, b: 43 },
-  removed: { r: 122, g: 41, b: 54 },
+  added: { r: 2, g: 40, b: 0 },
+  removed: { r: 61, g: 1, b: 0 },
   addedWord: { r: 56, g: 166, b: 73 },
   removedWord: { r: 179, g: 57, b: 79 },
 }
@@ -39,7 +39,7 @@ const CANVAS_DARK: Rgb = { r: 30, g: 30, b: 30 }
 const CANVAS_LIGHT: Rgb = { r: 255, g: 255, b: 255 }
 const DERIVED_WASH_DARK = 0.5
 const DERIVED_WASH_LIGHT = 0.45
-const LINE_NUMBER_DARK = '#646464'
+const LINE_NUMBER_DARK = '#7A7A7A'
 const LINE_NUMBER_LIGHT = '#999999'
 const DALTONIZED_THEME_RE = /daltonized/iu
 

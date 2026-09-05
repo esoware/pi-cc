@@ -2,9 +2,16 @@ import type { Theme, ThemeColor, ToolDefinition } from '@earendil-works/pi-codin
 import type { Component } from '@earendil-works/pi-tui'
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 
-import { themeName } from '../ansi.js'
+import { BG_DEFAULT, RESET, themeName } from '../ansi.js'
+import type { PaintText } from '../ansi.js'
 import { cacheKey, KeyedCache } from '../cache.js'
-import { clampWidth, indentContinuationLines, wrapWithHangingIndent } from './layout.js'
+import {
+  clampWidth,
+  EXPANDED_LINES,
+  indentContinuationLines,
+  renderTruncatedContent,
+  wrapWithHangingIndent,
+} from './layout.js'
 import { toolResultText } from './output.js'
 
 export const RESULT_LEAD = '  ⎿  '
@@ -15,6 +22,8 @@ export const STATUS_DOT = process.platform === 'darwin' ? '⏺' : '●'
 
 const MIN_RESULT_CONTENT_WIDTH = 10
 const MIN_DIFF_CARD_WIDTH = 20
+
+type RowBackground = Parameters<Theme['bg']>[0]
 
 interface ToolRowState {
   liveLineCount?: number
@@ -53,6 +62,31 @@ function resultContentWidth(width: number): number {
   return clampWidth(width - RESULT_COLUMN, MIN_RESULT_CONTENT_WIDTH)
 }
 
+export function rowDotState(row: ToolRow): DotState {
+  if (row.isError) {
+    return 'error'
+  }
+  if (!row.isPartial) {
+    return 'success'
+  }
+  return row.executionStarted ? 'busy' : 'idle'
+}
+
+function rowBackground(state: DotState): RowBackground {
+  switch (state) {
+    case 'error': {
+      return 'toolErrorBg'
+    }
+    case 'success': {
+      return 'toolSuccessBg'
+    }
+    case 'busy':
+    case 'idle': {
+      return 'toolPendingBg'
+    }
+  }
+}
+
 export function renderStatusDot(theme: Theme, state: DotState, dotVisible: boolean): string {
   switch (state) {
     case 'success': {
@@ -68,6 +102,41 @@ export function renderStatusDot(theme: Theme, state: DotState, dotVisible: boole
       return theme.fg('dim', STATUS_DOT)
     }
   }
+}
+
+export function dimPaint(theme: Theme): PaintText {
+  return (text) => theme.fg('dim', text)
+}
+
+function rowPaint(theme: Theme, color: RowBackground): PaintText {
+  const bg = theme.getBgAnsi(color)
+  const dim = theme.getFgAnsi('dim')
+  const muted = theme.getFgAnsi('muted')
+  return (text) => {
+    const recolored = dim === '' ? text : text.replaceAll(dim, muted)
+    return theme.bg(color, recolored.replaceAll(RESET, `${RESET}${bg}`).replaceAll(BG_DEFAULT, bg))
+  }
+}
+
+export function paintRowLines(
+  theme: Theme,
+  state: DotState,
+  lines: readonly string[],
+  width: number,
+): string[] {
+  const paint = rowPaint(theme, rowBackground(state))
+  const maxWidth = clampWidth(width)
+  return lines.map((line) =>
+    paint(`${line}${' '.repeat(Math.max(0, maxWidth - visibleWidth(line)))}`),
+  )
+}
+
+export function expandedBody(theme: Theme, text: string, width: number): string {
+  return renderTruncatedContent(theme, text, width, {
+    rows: EXPANDED_LINES,
+    paintLine: (line) => line,
+    expandHint: false,
+  })
 }
 
 export function formatToolHeader(

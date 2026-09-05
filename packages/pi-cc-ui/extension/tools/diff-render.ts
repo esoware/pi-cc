@@ -11,7 +11,6 @@ import type { DiffSgr } from './diff-palette.js'
 import { expandKeyHint } from './layout.js'
 
 export const MAX_PREVIEW_LINES = 60
-export const MAX_RENDER_LINES = 150
 
 const CHANGE_RATIO_THRESHOLD = 0.4
 const DIFF_GUTTER_GAP = 2

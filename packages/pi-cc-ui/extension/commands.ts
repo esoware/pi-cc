@@ -61,20 +61,12 @@ export function registerCommands(pi: ExtensionAPI, settings: Settings, groups: T
     notify(ctx, `Tool grouping: ${onOff(enabled)}`)
   }
 
-  function applyExtraDetail(ctx: ExtensionContext, enabled: boolean): void {
-    settings.setExtraDetailEnabled(enabled)
-    groups.repaintRows()
-    notify(ctx, `Extra detail: ${onOff(enabled)}`)
-  }
-
   function reportToolSettings(ctx: ExtensionContext): void {
     notify(
       ctx,
       [
         `Tool grouping: ${onOff(settings.isToolGroupingEnabled())}`,
-        `Extra detail: ${onOff(settings.isExtraDetailEnabled())} (ctrl+shift+o, or alt+o on legacy terminals)`,
         '  /cc-tools group on|off|toggle',
-        '  /cc-tools detail on|off|toggle',
       ].join('\n'),
     )
   }
@@ -92,10 +84,6 @@ export function registerCommands(pi: ExtensionAPI, settings: Settings, groups: T
       applyToolGrouping(ctx, requestedValue(value, settings.isToolGroupingEnabled()))
       return
     }
-    if (option === 'detail' || option === 'extra') {
-      applyExtraDetail(ctx, requestedValue(value, settings.isExtraDetailEnabled()))
-      return
-    }
     if (option !== undefined && option !== 'status') {
       notify(ctx, `Unknown option "${option}". Try /cc-tools status.`, 'error')
       return
@@ -103,12 +91,8 @@ export function registerCommands(pi: ExtensionAPI, settings: Settings, groups: T
     reportToolSettings(ctx)
   }
 
-  function toggleExtraDetail(ctx: ExtensionContext): void {
-    applyExtraDetail(ctx, !settings.isExtraDetailEnabled())
-  }
-
   pi.registerCommand('cc-tools', {
-    description: 'Control tool UI: grouping, extra detail',
+    description: 'Control tool UI: grouping',
     handler(args, ctx) {
       runToolsCommand(args, ctx)
       return Promise.resolve()
@@ -118,16 +102,5 @@ export function registerCommands(pi: ExtensionAPI, settings: Settings, groups: T
   pi.registerCommand('cc-theme', {
     description: 'Pick a pi-cc-ui theme',
     handler: (_args, ctx) => runThemeCommand(ctx),
-  })
-
-  pi.registerShortcut('ctrl+shift+o', {
-    description: 'Toggle tool extra-detail mode',
-    handler: toggleExtraDetail,
-  })
-
-  pi.registerShortcut('alt+o', {
-    description:
-      'Toggle tool extra-detail mode (fallback for terminals without the Kitty keyboard protocol)',
-    handler: toggleExtraDetail,
   })
 }

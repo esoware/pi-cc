@@ -1,8 +1,9 @@
+import { basename } from 'node:path'
+
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { truncateToWidth } from '@earendil-works/pi-tui'
 
 import { pluralize } from './format.js'
-import { tildeHome } from './paths.js'
 
 const TOKENS_PER_K = 1000
 const TOKENS_PER_M = 1_000_000
@@ -11,6 +12,7 @@ const CONTEXT_TILES = 8
 const FILLED_TILE = '█'
 const EMPTY_TILE = '░'
 const NO_MODEL_LABEL = 'no-model'
+const BRANCH_GLYPH = '⎇'
 
 function formatContextTokens(tokens: number): string {
   if (tokens < TOKENS_PER_K) {
@@ -62,7 +64,12 @@ export function registerStatusLine(pi: ExtensionAPI): void {
         render(width: number): string[] {
           const separator = theme.fg('dim', ' │ ')
 
-          const cwd = theme.fg('muted', tildeHome(ctx.cwd))
+          const dirName = basename(ctx.cwd) || ctx.cwd
+          const branch = footerData.getGitBranch()
+          const cwd =
+            branch === null
+              ? theme.fg('muted', dirName)
+              : `${theme.fg('muted', dirName)} ${theme.fg('dim', BRANCH_GLYPH)} ${theme.fg('muted', branch)}`
 
           const model = ctx.model?.id ?? NO_MODEL_LABEL
           const modelPart = `${theme.fg('muted', model)}${theme.fg('dim', ` · ${pi.getThinkingLevel()}`)}`

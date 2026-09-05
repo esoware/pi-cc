@@ -16,20 +16,24 @@ import {
 } from '@earendil-works/pi-tui'
 
 import type { PaintText } from './ansi.js'
-import { isRecord } from './guards.js'
+import { isRecord, isUnknownArray } from './guards.js'
 import type { Settings } from './settings.js'
 import type { ThinkingVisibility } from './thinking.js'
 import type { ToolGroups } from './tools/groups.js'
+import { STATUS_DOT } from './tools/row.js'
 import type { ToolRenderer } from './tools/row.js'
-import { createToolShellRender } from './tools/tool-shell.js'
-import type { ToolShellOptions } from './tools/tool-shell.js'
+import { createToolShellMouse, createToolShellRender, RowPress } from './tools/tool-shell.js'
+import type { MouseMethod, ToolShellOptions } from './tools/tool-shell.js'
 
 const PATCH_OWNER_FLAG = Symbol.for('pi-cc-ui:host-patch')
 
 const TOOL_OUTPUT_STATUS_RE = /^Tool output: (?:expanded|collapsed)$/u
 
 const USER_PREFIX = '❯ '
-const USER_PREFIX_PAD = '  '
+const ASSISTANT_PREFIX = `${STATUS_DOT} `
+const PREFIX_PAD = '  '
+
+const MOUSE_MOTION_FLAG = 32
 
 export const HOST_HARDCODED_PAD = 1
 
@@ -37,7 +41,9 @@ type Restore = () => void
 type HostMethod = (...args: never[]) => unknown
 type RenderMethod = (this: object, width: number) => string[]
 type WheelMethod = (this: object, event: unknown) => unknown
+type ClickCountMethod = (this: object, ...args: unknown[]) => unknown
 type ShowStatusMethod = (this: InteractiveMode, message: unknown) => unknown
+type PrefixText = () => string
 type RebuildMethod = (this: UserMessageComponent) => void
 type UpdateContentMethod = (this: object, ...args: unknown[]) => unknown
 type ThinkingVisibilityMethod = (this: object) => void
@@ -68,21 +74,40 @@ function isPaddedBox(value: unknown): value is PaddedBox {
 
 class PrefixedComponent implements Component {
   private readonly inner: Component
-  private readonly paintPrefix: PaintText
+  private readonly prefix: PrefixText
 
-  constructor(inner: Component, paintPrefix: PaintText) {
+  constructor(inner: Component, prefix: PrefixText) {
     this.inner = inner
-    this.paintPrefix = paintPrefix
+    this.prefix = prefix
   }
 
   render(width: number): string[] {
-    const lines = this.inner.render(Math.max(1, width - USER_PREFIX_PAD.length))
-    const prefix = this.paintPrefix(USER_PREFIX)
-    return lines.map((line, index) => (index === 0 ? prefix : USER_PREFIX_PAD) + line)
+    const lines = this.inner.render(Math.max(1, width - PREFIX_PAD.length))
+    const prefix = this.prefix()
+    return lines.map((line, index) => (index === 0 ? prefix : PREFIX_PAD) + line)
   }
 
   invalidate(): void {
     this.inner.invalidate()
+  }
+}
+
+function prefixAssistantText(component: object): void {
+  if (!isRecord(component)) {
+    return
+  }
+  const container = component['contentContainer']
+  if (!isRecord(container)) {
+    return
+  }
+  const children = container['children']
+  if (!isUnknownArray(children)) {
+    return
+  }
+  for (const entry of children.entries()) {
+    if (entry[1] instanceof Markdown) {
+      children[entry[0]] = new PrefixedComponent(entry[1], () => ASSISTANT_PREFIX)
+    }
   }
 }
 
@@ -132,6 +157,10 @@ function installMethod(
 }
 
 function isRenderMethod(value: unknown): value is RenderMethod {
+  return typeof value === 'function'
+}
+
+function isMouseMethod(value: unknown): value is MouseMethod {
   return typeof value === 'function'
 }
 
@@ -207,7 +236,7 @@ function patchUserMessagePrefix(paintPrefix: PaintText): Restore | undefined {
     box.paddingY = 0
     const inner = box.children[0]
     if (inner !== undefined && !(inner instanceof PrefixedComponent)) {
-      box.children[0] = new PrefixedComponent(inner, paintPrefix)
+      box.children[0] = new PrefixedComponent(inner, () => paintPrefix(USER_PREFIX))
     }
     box.invalidateCache()
   })
@@ -234,11 +263,15 @@ function patchThinkingMarkdownPath(): Restore | undefined {
     found,
     function updateContent(this: object, ...args: unknown[]): unknown {
       if (!isRecord(this) || this['hideThinkingBlock'] !== true) {
-        return original.call(this, ...args)
+        const result = original.call(this, ...args)
+        prefixAssistantText(this)
+        return result
       }
       this['hideThinkingBlock'] = false
       try {
-        return original.call(this, ...args)
+        const result = original.call(this, ...args)
+        prefixAssistantText(this)
+        return result
       } finally {
         this['hideThinkingBlock'] = true
       }
@@ -301,7 +334,7 @@ function isWheelMethod(value: unknown): value is WheelMethod {
   return typeof value === 'function'
 }
 
-function patchWheelScroll(lines: number): Restore | undefined {
+function patchWheelScroll(lines: number, groups: ToolGroups): Restore | undefined {
   const proto: object = TuiAltScreen.prototype
   const found = findOriginal(proto, 'routeWheel')
   if (found === undefined || !isWheelMethod(found.value)) {
@@ -313,6 +346,7 @@ function patchWheelScroll(lines: number): Restore | undefined {
     'routeWheel',
     found,
     function routeWheel(this: object, event: unknown): unknown {
+      groups.clearHover()
       if (!isRecord(this)) {
         return original.call(this, event)
       }
@@ -337,6 +371,77 @@ function patchToolShell(options: ToolShellOptions): Restore | undefined {
     return undefined
   }
   return installMethod(proto, 'render', found, createToolShellRender(options, found.value))
+}
+
+function isClickCountMethod(value: unknown): value is ClickCountMethod {
+  return typeof value === 'function'
+}
+
+function isMotionEvent(raw: unknown): boolean {
+  return (
+    isRecord(raw) &&
+    typeof raw['button'] === 'number' &&
+    raw['release'] !== true &&
+    (raw['button'] & MOUSE_MOTION_FLAG) !== 0
+  )
+}
+
+function patchMouseEvent(press: RowPress, groups: ToolGroups): Restore | undefined {
+  const proto: object = TuiAltScreen.prototype
+  const found = findOriginal(proto, 'handleMouseEvent')
+  if (found === undefined || !isMouseMethod(found.value)) {
+    return undefined
+  }
+  const original = found.value
+  return installMethod(
+    proto,
+    'handleMouseEvent',
+    found,
+    function handleMouseEvent(this: object, raw: unknown): unknown {
+      press.begin()
+      if (!isMotionEvent(raw)) {
+        return original.call(this, raw)
+      }
+      groups.beginHoverProbe()
+      try {
+        return original.call(this, raw)
+      } finally {
+        groups.endHoverProbe()
+      }
+    },
+  )
+}
+
+function patchRowClickCount(press: RowPress): Restore | undefined {
+  const proto: object = TuiAltScreen.prototype
+  const found = findOriginal(proto, 'getClickCount')
+  if (found === undefined || !isClickCountMethod(found.value)) {
+    return undefined
+  }
+  const original = found.value
+  return installMethod(
+    proto,
+    'getClickCount',
+    found,
+    function getClickCount(this: object, ...args: unknown[]): unknown {
+      if (!press.take()) {
+        return original.call(this, ...args)
+      }
+      if (isRecord(this)) {
+        this['lastClick'] = undefined
+      }
+      return 1
+    },
+  )
+}
+
+function patchToolMouse(options: ToolShellOptions): Restore | undefined {
+  const proto: object = ToolExecutionComponent.prototype
+  const found = findOriginal(proto, 'handleMouse')
+  if (found === undefined || !isMouseMethod(found.value)) {
+    return undefined
+  }
+  return installMethod(proto, 'handleMouse', found, createToolShellMouse(options, found.value))
 }
 
 export interface HostPatchOptions {
@@ -376,19 +481,25 @@ export function installHostPatches(pi: ExtensionAPI, options: HostPatchOptions):
       thinking.setExpanded(expanded)
     }
 
+    const press = new RowPress()
+    const shellOptions: ToolShellOptions = {
+      getTheme: () => theme,
+      ui: { groups },
+      renderers,
+      getAllTools: () => pi.getAllTools(),
+      press,
+    }
     const patches: (Restore | undefined)[] = [
       patchAssistantBlankRows(),
       patchToolOutputStatus(),
       patchUserMessagePrefix(paintUserPrefix),
       patchThinkingMarkdownPath(),
       patchThinkingToggleBridge(setThinkingExpanded),
-      patchWheelScroll(settings.wheelScrollLines()),
-      patchToolShell({
-        getTheme: () => theme,
-        ui: { settings, groups },
-        renderers,
-        getAllTools: () => pi.getAllTools(),
-      }),
+      patchWheelScroll(settings.wheelScrollLines(), groups),
+      patchToolShell(shellOptions),
+      patchToolMouse(shellOptions),
+      patchMouseEvent(press, groups),
+      patchRowClickCount(press),
     ]
     const padShift = HOST_HARDCODED_PAD - settings.outputPad()
     if (padShift !== 0) {

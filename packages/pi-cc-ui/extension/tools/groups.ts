@@ -5,7 +5,6 @@ import type { FormatPath } from '../paths.js'
 import type { Settings } from '../settings.js'
 import { classifyToolCall, formatGlanceHint, readToolCallArguments } from './classify.js'
 import type { GlanceHint, ToolCallArguments, ToolGlance } from './classify.js'
-import { toolResultText } from './output.js'
 
 const MAX_ARCHIVED_GROUPS = 500
 const MAX_TRACKED_ROWS = 1000
@@ -25,7 +24,6 @@ export interface ToolRecord {
   readonly glance: ToolGlance | undefined
   readonly startedAt: number
   status: ToolStatus
-  resultText: string | undefined
 }
 
 interface ThinkingHint {
@@ -55,6 +53,22 @@ export interface ToolGroup {
   thinkingHint: ThinkingHint | undefined
   contentAfter: boolean
   hint: HintState
+}
+
+export interface RowHandle {
+  readonly invalidate: () => void
+  readonly isExpanded: () => boolean
+  readonly setExpanded: (expanded: boolean) => void
+}
+
+export interface GroupMembership {
+  readonly group: ToolGroup
+  readonly isLeader: boolean
+  readonly expanded: boolean
+}
+
+export interface ToolUi {
+  readonly groups: ToolGroups
 }
 
 type TurnEntry = { readonly kind: 'tool'; readonly toolCallId: string } | { readonly kind: 'break' }
@@ -93,7 +107,7 @@ function latestHint(group: ToolGroup): GlanceHint | undefined {
 
 export class ToolGroups {
   private readonly settings: Settings
-  private readonly rowInvalidators = new Map<string, () => void>()
+  private readonly rowHandles = new Map<string, RowHandle>()
   private readonly blinkingRows = new Map<string, () => void>()
   private records = new Map<string, ToolRecord>()
   private turnOrder: TurnEntry[] = []
@@ -106,6 +120,8 @@ export class ToolGroups {
   private blinkOn = true
   private blinkEnabled = false
   private agentDepth = 0
+  private hovered: string | undefined = undefined
+  private hoverSeen = false
 
   constructor(pi: ExtensionAPI, settings: Settings) {
     this.settings = settings
@@ -170,7 +186,6 @@ export class ToolGroups {
         glance,
         startedAt: Date.now(),
         status: 'pending',
-        resultText: undefined,
       })
       this.turnOrder.push({ kind: 'tool', toolCallId: event.toolCallId })
       this.rebuildGroups()
@@ -188,7 +203,6 @@ export class ToolGroups {
         return
       }
       record.status = event.isError ? 'error' : 'success'
-      record.resultText = toolResultText(event.result)
       const group = this.groupOf(event.toolCallId)
       if (group !== undefined) {
         this.updatePhase(group)
@@ -197,39 +211,76 @@ export class ToolGroups {
     })
   }
 
-  groupLedBy(toolCallId: string): ToolGroup | undefined {
-    if (!this.settings.isToolGroupingEnabled() || !this.isLeader(toolCallId)) {
+  membership(toolCallId: string): GroupMembership | undefined {
+    if (!this.settings.isToolGroupingEnabled()) {
       return undefined
     }
-    return this.groupOf(toolCallId)
-  }
-
-  isHiddenMember(toolCallId: string): boolean {
-    if (!this.settings.isToolGroupingEnabled()) {
-      return false
+    const group = this.groupOf(toolCallId)
+    const leaderId = group?.members[0]?.toolCallId
+    if (group === undefined || leaderId === undefined) {
+      return undefined
     }
-    return this.groupOf(toolCallId) !== undefined && !this.isLeader(toolCallId)
+    return {
+      group,
+      isLeader: leaderId === toolCallId,
+      expanded: this.rowHandles.get(leaderId)?.isExpanded() ?? false,
+    }
   }
 
-  trackRow(toolCallId: string, invalidate: () => void): void {
-    this.rowInvalidators.set(toolCallId, invalidate)
-    while (this.rowInvalidators.size > MAX_TRACKED_ROWS) {
-      const oldest = this.rowInvalidators.keys().next().value
+  setGroupExpanded(toolCallId: string, expanded: boolean): void {
+    const group = this.groupOf(toolCallId)
+    if (group === undefined) {
+      return
+    }
+    const leaderId = group.members[0]?.toolCallId
+    if (leaderId !== undefined) {
+      this.rowHandles.get(leaderId)?.setExpanded(expanded)
+    }
+    for (const member of group.members) {
+      this.rowHandles.get(member.toolCallId)?.invalidate()
+    }
+  }
+
+  trackRow(toolCallId: string, handle: RowHandle): void {
+    this.rowHandles.set(toolCallId, handle)
+    while (this.rowHandles.size > MAX_TRACKED_ROWS) {
+      const oldest = this.rowHandles.keys().next().value
       if (oldest === undefined) {
         break
       }
-      this.rowInvalidators.delete(oldest)
+      this.rowHandles.delete(oldest)
     }
   }
 
   repaintRows(): void {
-    for (const invalidate of this.rowInvalidators.values()) {
-      invalidate()
+    for (const handle of this.rowHandles.values()) {
+      handle.invalidate()
     }
   }
 
-  blinkVisible(): boolean {
-    return this.blinkOn
+  isHovered(toolCallId: string): boolean {
+    return this.hovered === toolCallId
+  }
+
+  hoverRow(toolCallId: string): boolean {
+    this.hoverSeen = true
+    const changed = this.hovered !== toolCallId
+    this.setHovered(toolCallId)
+    return changed
+  }
+
+  beginHoverProbe(): void {
+    this.hoverSeen = false
+  }
+
+  endHoverProbe(): void {
+    if (!this.hoverSeen) {
+      this.clearHover()
+    }
+  }
+
+  clearHover(): void {
+    this.setHovered(undefined)
   }
 
   keepBlinking(): boolean {
@@ -253,7 +304,8 @@ export class ToolGroups {
   private reset(): void {
     this.startTurn()
     this.archivedGroups = []
-    this.rowInvalidators.clear()
+    this.hovered = undefined
+    this.rowHandles.clear()
     this.blinkingRows.clear()
     this.agentDepth = 0
     this.stopBlink()
@@ -274,7 +326,6 @@ export class ToolGroups {
   private archiveGroups(): void {
     for (const group of this.liveGroups) {
       for (const member of group.members) {
-        member.resultText = undefined
         member.status = member.status === 'pending' ? 'success' : member.status
       }
       group.phase = 'settled'
@@ -349,15 +400,24 @@ export class ToolGroups {
     groups.push(group)
   }
 
+  private setHovered(toolCallId: string | undefined): void {
+    const previous = this.hovered
+    if (previous === toolCallId) {
+      return
+    }
+    this.hovered = toolCallId
+    for (const id of [previous, toolCallId]) {
+      if (id !== undefined) {
+        this.rowHandles.get(id)?.invalidate()
+      }
+    }
+  }
+
   private groupOf(toolCallId: string): ToolGroup | undefined {
     function hasMember(group: ToolGroup): boolean {
       return group.members.some((member) => member.toolCallId === toolCallId)
     }
     return this.liveGroups.find(hasMember) ?? this.archivedGroups.find(hasMember)
-  }
-
-  private isLeader(toolCallId: string): boolean {
-    return this.groupOf(toolCallId)?.members[0]?.toolCallId === toolCallId
   }
 
   private updatePhase(group: ToolGroup): void {
@@ -370,7 +430,7 @@ export class ToolGroups {
   private invalidateGroup(group: ToolGroup): void {
     const leaderId = group.members[0]?.toolCallId
     if (leaderId !== undefined) {
-      this.rowInvalidators.get(leaderId)?.()
+      this.rowHandles.get(leaderId)?.invalidate()
     }
   }
 

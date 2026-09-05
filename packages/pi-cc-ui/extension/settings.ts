@@ -8,7 +8,6 @@ import { isRecord, isUnknownArray } from './guards.js'
 
 const PREFERENCES_FILE = 'pi-cc-ui.json'
 const TOOL_GROUPING_PREFERENCE = 'groupToolCalls'
-const EXTRA_DETAIL_PREFERENCE = 'extraDetail'
 const WHEEL_SCROLL_LINES_PREFERENCE = 'wheelScrollLines'
 const DEFAULT_WHEEL_SCROLL_LINES = 3
 const JSON_INDENT = 2
@@ -67,14 +66,6 @@ export class Settings {
 
   setToolGroupingEnabled(enabled: boolean): void {
     this.writePreference(TOOL_GROUPING_PREFERENCE, enabled)
-  }
-
-  isExtraDetailEnabled(): boolean {
-    return this.booleanPreference(EXTRA_DETAIL_PREFERENCE, false)
-  }
-
-  setExtraDetailEnabled(enabled: boolean): void {
-    this.writePreference(EXTRA_DETAIL_PREFERENCE, enabled)
   }
 
   wheelScrollLines(): number {

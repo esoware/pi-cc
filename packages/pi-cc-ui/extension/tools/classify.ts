@@ -2,69 +2,9 @@ import { collapseWhitespace, truncateChars } from '../format.js'
 import { isRecord } from '../guards.js'
 import type { FormatPath } from '../paths.js'
 
-const BASH_SEARCH_COMMANDS = new Set([
-  'find',
-  'grep',
-  'rg',
-  'ag',
-  'ack',
-  'locate',
-  'which',
-  'whereis',
-])
-const BASH_READ_COMMANDS = new Set([
-  'cat',
-  'head',
-  'tail',
-  'less',
-  'more',
-  'wc',
-  'stat',
-  'file',
-  'strings',
-  'jq',
-  'awk',
-  'cut',
-  'sort',
-  'uniq',
-  'tr',
-])
-const BASH_LIST_COMMANDS = new Set(['ls', 'tree', 'du'])
-const BASH_NEUTRAL_COMMANDS = new Set(['echo', 'printf', 'true', 'false', ':'])
-
-const REDIRECT_OPERATORS = new Set(['>', '>>', '>&', '2>', '2>>', '2>&', '<'])
-const WRITE_REDIRECT_OPERATORS = new Set(['>', '>>', '>&', '2>', '2>>', '2>&'])
-const FD_DUP_OPERATORS = new Set(['>&', '2>&'])
-const MULTI_CHAR_OPERATORS = ['2>>', '2>&', '||', '&&', '>>', '>&', '2>']
-const SINGLE_CHAR_OPERATORS = new Set(['|', ';', '&', '>', '<', '\n'])
-const SEPARATOR_OPERATORS = new Set(['|', '||', '&&', ';', '&'])
-const NULL_DEVICE = '/dev/null'
-const FIND_MUTATING_FLAGS = new Set([
-  '-delete',
-  '-exec',
-  '-execdir',
-  '-ok',
-  '-okdir',
-  '-fprint',
-  '-fprintf',
-])
-const UNIQ_VALUED_FLAGS = new Set([
-  '-f',
-  '-s',
-  '-w',
-  '--skip-fields',
-  '--skip-chars',
-  '--check-chars',
-])
-const UNIQ_WRITING_OPERANDS = 2
-
-const COMMAND_SUBSTITUTION_RE = /\$\(|`|<\(/u
-const WHITESPACE_RE = /\s+/u
-const FD_TARGET_RE = /^\d+-?$/u
-const SORT_OUTPUT_FLAG_RE = /^-[a-zA-Z]*o$/u
 const CAMEL_BOUNDARY_RE = /(?<lower>[a-z\d])(?<upper>[A-Z])/gu
 
-export const MCP_TOOL_PREFIX = 'mcp__'
+const MCP_TOOL_PREFIX = 'mcp__'
 const MCP_SEPARATOR = '__'
 const MCP_VERB_SEGMENTS = 2
 const MCP_READ_VERBS = new Set([
@@ -126,6 +66,7 @@ export type ToolGlance =
       readonly hint: GlanceHint | undefined
     }
   | { readonly kind: 'list'; readonly hint: GlanceHint | undefined }
+  | { readonly kind: 'shell'; readonly hint: GlanceHint }
   | { readonly kind: 'mcp'; readonly server: string; readonly hint: GlanceHint | undefined }
 
 export interface ToolCallArguments {
@@ -134,9 +75,6 @@ export interface ToolCallArguments {
   readonly command: string | undefined
   readonly query: string | undefined
 }
-
-type ShellCommandKind = 'search' | 'read' | 'list'
-type CommandClass = ShellCommandKind | 'writes' | 'ignored'
 
 function textArgument(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key]
@@ -153,153 +91,6 @@ export function readToolCallArguments(args: unknown): ToolCallArguments {
     command: textArgument(args, 'command'),
     query: textArgument(args, 'query'),
   }
-}
-
-function writesThroughArguments(base: string, words: readonly string[]): boolean {
-  const args = words.slice(1)
-  if (base === 'sort') {
-    return args.some((word) => word.startsWith('--output') || SORT_OUTPUT_FLAG_RE.test(word))
-  }
-  if (base !== 'uniq') {
-    return false
-  }
-  let operands = 0
-  for (let index = 0; index < args.length; index += 1) {
-    const word = args[index] ?? ''
-    if (UNIQ_VALUED_FLAGS.has(word)) {
-      index += 1
-    } else if (!word.startsWith('-') || word === '-') {
-      operands += 1
-    }
-  }
-  return operands >= UNIQ_WRITING_OPERANDS
-}
-
-function operatorAt(command: string, index: number): string | undefined {
-  return MULTI_CHAR_OPERATORS.find((operator) => command.startsWith(operator, index))
-}
-
-function splitCommandWithOperators(command: string): string[] | undefined {
-  const parts: string[] = []
-  let current = ''
-  let quote: string | undefined = undefined
-  let index = 0
-
-  function flush(): void {
-    const trimmed = current.trim()
-    if (trimmed !== '') {
-      parts.push(trimmed)
-    }
-    current = ''
-  }
-
-  while (index < command.length) {
-    const char = command[index] ?? ''
-    const operator = quote === undefined ? operatorAt(command, index) : undefined
-    if (quote !== undefined) {
-      current += char
-      if (char === quote) {
-        quote = undefined
-      }
-      index += 1
-    } else if (char === '"' || char === "'") {
-      quote = char
-      current += char
-      index += 1
-    } else if (char === '\\' && index + 1 < command.length) {
-      current += char + (command[index + 1] ?? '')
-      index += 2
-    } else if (operator !== undefined) {
-      flush()
-      parts.push(operator)
-      index += operator.length
-    } else if (SINGLE_CHAR_OPERATORS.has(char)) {
-      flush()
-      parts.push(char)
-      index += 1
-    } else {
-      current += char
-      index += 1
-    }
-  }
-  if (quote !== undefined) {
-    return undefined
-  }
-  flush()
-  return parts
-}
-
-function isHarmlessRedirect(operator: string, target: string): boolean {
-  if (!WRITE_REDIRECT_OPERATORS.has(operator)) {
-    return true
-  }
-  const word = target.split(WHITESPACE_RE)[0] ?? ''
-  if (FD_DUP_OPERATORS.has(operator) && FD_TARGET_RE.test(word)) {
-    return true
-  }
-  return word === NULL_DEVICE
-}
-
-function classifyCommandWord(part: string): CommandClass {
-  const words = part.split(WHITESPACE_RE)
-  const base = words[0]
-  if (base === undefined || base === '' || BASH_NEUTRAL_COMMANDS.has(base)) {
-    return 'ignored'
-  }
-  if (base === 'find' && words.some((word) => FIND_MUTATING_FLAGS.has(word))) {
-    return 'writes'
-  }
-  if (writesThroughArguments(base, words)) {
-    return 'writes'
-  }
-  if (BASH_SEARCH_COMMANDS.has(base)) {
-    return 'search'
-  }
-  if (BASH_READ_COMMANDS.has(base)) {
-    return 'read'
-  }
-  return BASH_LIST_COMMANDS.has(base) ? 'list' : 'writes'
-}
-
-function classifyShellCommand(command: string): ShellCommandKind | undefined {
-  if (COMMAND_SUBSTITUTION_RE.test(command)) {
-    return undefined
-  }
-  const parts = splitCommandWithOperators(command)
-  if (parts === undefined || parts.length === 0) {
-    return undefined
-  }
-  const kinds = new Set<ShellCommandKind>()
-  let redirect: string | undefined = undefined
-  for (const part of parts) {
-    if (redirect !== undefined) {
-      const operator = redirect
-      redirect = undefined
-      if (!isHarmlessRedirect(operator, part)) {
-        return undefined
-      }
-    } else if (REDIRECT_OPERATORS.has(part)) {
-      redirect = part
-    } else if (!SEPARATOR_OPERATORS.has(part)) {
-      const commandClass = classifyCommandWord(part)
-      if (commandClass === 'writes') {
-        return undefined
-      }
-      if (commandClass !== 'ignored') {
-        kinds.add(commandClass)
-      }
-    }
-  }
-  if (redirect !== undefined && WRITE_REDIRECT_OPERATORS.has(redirect)) {
-    return undefined
-  }
-  if (kinds.has('search')) {
-    return 'search'
-  }
-  if (kinds.has('read')) {
-    return 'read'
-  }
-  return kinds.has('list') ? 'list' : undefined
 }
 
 function mcpParts(name: string): { server: string; verbs: string } | undefined {
@@ -366,18 +157,13 @@ function stripLeadingComments(command: string): string {
   return lines.slice(index).join('\n')
 }
 
-function classifyShellCall(command: string, prompt: string): ToolGlance | undefined {
+function classifyShellCall(command: string, prompt: string): ToolGlance {
   const comment = leadingComment(command)
-  const body = stripLeadingComments(command)
-  const kind = classifyShellCommand(body)
-  if (kind === undefined) {
-    return undefined
-  }
   const hint: GlanceHint =
     comment === undefined
-      ? { kind: 'command', text: compactCommand(body), prompt }
+      ? { kind: 'command', text: compactCommand(stripLeadingComments(command)), prompt }
       : { kind: 'comment', text: comment }
-  return kind === 'read' ? { kind, path: undefined, hint } : { kind, hint }
+  return { kind: 'shell', hint }
 }
 
 export function classifyToolCall(

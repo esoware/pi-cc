@@ -10,7 +10,7 @@
     "planMode": "#669999",
     "promptBorder": "#888888",
     "inactive": "#999999",
-    "subtle": "#505050",
+    "subtle": "#464646",
     "success": "#3399FF",
     "error": "#FF6666",
     "warning": "#FFCC00",
@@ -18,7 +18,7 @@
     "diffRemovedWord": "#B30000",
     "userMsgBg": "#373737",
     "selectionBg": "#264F78",
-    "bashMsgBg": "#413C41"
+    "toolBg": "#464646"
   },
   "colors": {
     "accent": "permission",
@@ -41,9 +41,9 @@
     "customMessageBg": "userMsgBg",
     "customMessageText": "#FFFFFF",
     "customMessageLabel": "claudeShimmer",
-    "toolPendingBg": "bashMsgBg",
-    "toolSuccessBg": "bashMsgBg",
-    "toolErrorBg": "bashMsgBg",
+    "toolPendingBg": "toolBg",
+    "toolSuccessBg": "toolBg",
+    "toolErrorBg": "toolBg",
     "toolTitle": "claude",
     "toolOutput": "inactive",
     "mdHeading": "",
@@ -80,6 +80,6 @@
   "export": {
     "pageBg": "#1E1E1E",
     "cardBg": "#373737",
-    "infoBg": "#413C41"
+    "infoBg": "#464646"
   }
 }

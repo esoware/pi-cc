@@ -40,3 +40,7 @@ export function collapseWhitespace(text: string): string {
 export function truncateChars(text: string, maxChars: number): string {
   return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text
 }
+
+export function escapeNewlines(text: string): string {
+  return text.replaceAll('\r', '').replaceAll('\n', String.raw`\n`)
+}

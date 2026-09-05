@@ -18,7 +18,7 @@
     "diffRemovedWord": 9,
     "userMsgBg": 8,
     "selectionBg": 4,
-    "bashMsgBg": 0
+    "toolBg": 8
   },
   "colors": {
     "accent": "permission",
@@ -41,9 +41,9 @@
     "customMessageBg": "userMsgBg",
     "customMessageText": 15,
     "customMessageLabel": "claudeShimmer",
-    "toolPendingBg": "bashMsgBg",
-    "toolSuccessBg": "bashMsgBg",
-    "toolErrorBg": "bashMsgBg",
+    "toolPendingBg": "toolBg",
+    "toolSuccessBg": "toolBg",
+    "toolErrorBg": "toolBg",
     "toolTitle": "claude",
     "toolOutput": "inactive",
     "mdHeading": "",
@@ -80,6 +80,6 @@
   "export": {
     "pageBg": "#1E1E1E",
     "cardBg": "#373737",
-    "infoBg": "#413C41"
+    "infoBg": "#464646"
   }
 }

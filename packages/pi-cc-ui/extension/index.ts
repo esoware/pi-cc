@@ -17,7 +17,7 @@ export default function piCcUi(pi: ExtensionAPI): void {
   const groups = new ToolGroups(pi, settings)
   const thinking = new ThinkingVisibility()
 
-  const renderers = createBuiltinRenderers(pi, settings, groups)
+  const renderers = createBuiltinRenderers(pi, groups)
   installHostPatches(pi, { settings, groups, renderers, thinking })
 
   registerSpinner(pi)

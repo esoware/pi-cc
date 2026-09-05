@@ -18,7 +18,7 @@
     "diffRemovedWord": "#D1454B",
     "userMsgBg": "#F0F0F0",
     "selectionBg": "#B4D5FF",
-    "bashMsgBg": "#FAF5FA"
+    "toolBg": "#E0E0E0"
   },
   "colors": {
     "accent": "permission",
@@ -41,9 +41,9 @@
     "customMessageBg": "userMsgBg",
     "customMessageText": "#000000",
     "customMessageLabel": "claudeShimmer",
-    "toolPendingBg": "bashMsgBg",
-    "toolSuccessBg": "bashMsgBg",
-    "toolErrorBg": "bashMsgBg",
+    "toolPendingBg": "toolBg",
+    "toolSuccessBg": "toolBg",
+    "toolErrorBg": "toolBg",
     "toolTitle": "claude",
     "toolOutput": "inactive",
     "mdHeading": "",
@@ -80,6 +80,6 @@
   "export": {
     "pageBg": "#FFFFFF",
     "cardBg": "#F0F0F0",
-    "infoBg": "#FAF5FA"
+    "infoBg": "#E0E0E0"
   }
 }
